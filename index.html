@@ -1,0 +1,780 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Cursor Metrics Leaderboard</title>
+    <!-- Chart.js & PapaParse via CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <style>
+      /*
+        Minimal modern dark UI to visualize Cursor usage metrics.
+        - Two charts: line (tokens/cost over time) and pie (model usage share)
+        - Simple responsive layout with controls
+      */
+      :root {
+        color-scheme: dark;
+        --bg: #0b0d12;
+        --panel: #131826;
+        --muted: #a8b3cf;
+        --text: #ecf1ff;
+        --accent: #4f7cff;
+        --accent-2: #22c55e;
+        --border: #23314d;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body { height: 100%; }
+
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu,
+          Cantarell, Noto Sans, sans-serif, Apple Color Emoji, Segoe UI Emoji;
+        background: linear-gradient(180deg, #0b0d12 0%, #0d1220 100%);
+        color: var(--text);
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      header {
+        padding: 24px 20px 8px;
+      }
+
+      .title {
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+      }
+
+      .subtitle {
+        color: var(--muted);
+        margin-top: 6px;
+        font-size: 13px;
+      }
+
+      main.container {
+        padding: 12px 20px 28px;
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 16px;
+        /* Let content define height; do not stretch to viewport */
+      }
+
+      @media (min-width: 1080px) {
+        main.container {
+          grid-template-columns: 2.2fr 1fr;
+          align-items: stretch; /* equal height based on tallest content, not viewport */
+        }
+      }
+
+      .panel {
+        background: radial-gradient(1200px 600px at -20% -20%, #0f1628 0%, var(--panel) 60%, var(--panel) 100%);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 12px;
+        box-shadow: 0 10px 30px rgba(8, 12, 20, 0.45), inset 0 1px 0 rgba(255,255,255,0.03);
+      }
+
+      .panel h2 {
+        margin: 0 0 8px 0;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text);
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 12px;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+
+      label { font-size: 12px; color: var(--muted); }
+
+      select, input[type="date"], .segmented, .chip {
+        background: #0e1423;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 8px 10px;
+        font-size: 12px;
+        outline: none;
+      }
+
+      .hidden { display: none; }
+      .flex-spacer { flex: 1 1 auto; }
+
+      .segmented {
+        display: inline-flex;
+        padding: 2px;
+        gap: 2px;
+        background: #0d1321;
+      }
+
+      .segmented button {
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        padding: 6px 10px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      .segmented button.active {
+        background: linear-gradient(180deg, rgba(79,124,255,0.20), rgba(79,124,255,0.05));
+        color: var(--text);
+        border: 1px solid rgba(79,124,255,0.35);
+      }
+
+      .charts {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+
+      /* Keep charts visible without vertical scroll on common desktop viewports */
+      canvas { width: 100%; height: 300px; max-height: 42vh; }
+
+      /* Charts have fixed height to avoid pushing panels to viewport bottom */
+      /* Right panel uses grid to let the canvas fill remaining space */
+
+      footer { padding: 24px 20px; color: var(--muted); font-size: 12px; }
+
+      .legend-note { color: var(--muted); font-size: 11px; margin-top: 6px; }
+
+      /* Right panel layout: stack header, controls, note; chart sized by wrapper */
+      #rightPanel { display: grid; grid-template-rows: auto auto auto auto; }
+      #rightPanel .controls { align-self: start; }
+      #sideNote { align-self: start; margin-top: 8px; }
+      #rightChartWrap { align-self: end; height: 360px; }
+      #pieChart { width: 100% !important; height: 100% !important; display: block; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="title">Cursor Metrics Leaderboard</div>
+      <div class="subtitle">Daily/weekly tokens & costs by user, plus model usage breakdown (Jan–Sep 2025)</div>
+    </header>
+
+    <main class="container">
+      <section class="panel">
+        <h2>Usage Over Time</h2>
+        <div class="controls">
+          <div class="segmented" id="metricToggle" role="tablist" aria-label="Metric">
+            <button data-value="tokens" class="active" aria-selected="true">Tokens</button>
+            <button data-value="cost">Cost</button>
+          </div>
+
+          <div class="segmented" id="granularityToggle" role="tablist" aria-label="Granularity">
+            <button data-value="daily" class="active" aria-selected="true">Daily</button>
+            <button data-value="weekly">Weekly</button>
+          </div>
+
+          <label for="topUsers">Top Users</label>
+          <select id="topUsers">
+            <option value="5">Top 5</option>
+            <option value="8" selected>Top 8</option>
+            <option value="12">Top 12</option>
+            <option value="20">Top 20</option>
+            <option value="-1">All</option>
+          </select>
+
+          <label for="quickRange">Date</label>
+          <select id="quickRange">
+            <option value="range" selected>Range</option>
+            <option value="current-month">Current month</option>
+            <option value="last-month">Last month</option>
+            <option value="last-3-months">Last 3 months</option>
+          </select>
+
+          <span id="rangeInputs">
+            <label for="dateFrom">From</label>
+            <input type="date" id="dateFrom" />
+            <label for="dateTo">To</label>
+            <input type="date" id="dateTo" />
+          </span>
+
+          <span class="flex-spacer"></span>
+          <button class="chip" id="resetRange" title="Return to automatic start based on visible data">Auto range</button>
+        </div>
+        <div class="charts">
+          <canvas id="lineChart"></canvas>
+          <div class="legend-note">Includes only rows with numeric values; non-numeric/empty values are treated as 0.</div>
+        </div>
+      </section>
+
+      <aside class="panel" id="rightPanel">
+        <h2>Model Usage Share</h2>
+        <div class="controls">
+          <div class="segmented" id="rightModeToggle" role="tablist" aria-label="Right Panel Mode">
+            <button data-value="models" class="active" aria-selected="true">Models</button>
+            <button data-value="users">Top Users</button>
+          </div>
+        </div>
+        <div class="legend-note" id="sideNote"></div>
+        <div id="rightChartWrap"><canvas id="pieChart"></canvas></div>
+      </aside>
+    </main>
+
+    <footer>
+      Served as a static page. Data from <code>stats/jan-jun.csv</code> and <code>stats/jul-sep.csv</code>.
+    </footer>
+
+    <script>
+      // --- Data ingestion & transformation
+      const CSV_PATHS = [
+        'stats/jan-jun.csv',
+        'stats/jul-sep.csv',
+      ];
+
+      // Column keys in the provided CSVs
+      const COL = {
+        date: 'Date',
+        user: 'User',
+        model: 'Model',
+        totalTokens: 'Total Tokens',
+        cost: 'Cost',
+      };
+
+      // Ignore data prior to this UTC date (YYYY-MM-DD)
+      const MIN_DATE = '2025-05-05';
+
+      function parseNumber(value) {
+        if (value === null || value === undefined) return 0;
+        const trimmed = String(value).trim();
+        if (!trimmed || trimmed.toLowerCase() === 'nan') return 0;
+        const num = Number(trimmed);
+        return Number.isFinite(num) ? num : 0;
+      }
+
+      function toDateOnlyIso(dateStr) {
+        // Input is ISO datetime string like 2025-06-30T21:24:32.214Z
+        const d = new Date(dateStr);
+        // Normalize to UTC date-only to avoid timezone skew
+        const y = d.getUTCFullYear();
+        const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      }
+
+      function getWeekStartUtc(dateOnlyIso) {
+        // Returns ISO date (YYYY-MM-DD) for Monday of the given date's week (UTC)
+        const [y, m, d] = dateOnlyIso.split('-').map(Number);
+        const dt = new Date(Date.UTC(y, m - 1, d));
+        const day = dt.getUTCDay() || 7; // Sunday => 7
+        dt.setUTCDate(dt.getUTCDate() - (day - 1)); // back to Monday
+        const yy = dt.getUTCFullYear();
+        const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(dt.getUTCDate()).padStart(2, '0');
+        return `${yy}-${mm}-${dd}`;
+      }
+
+      async function loadAllCsvRows() {
+        const allRows = [];
+        for (const path of CSV_PATHS) {
+          const text = await fetch(path).then(r => {
+            if (!r.ok) throw new Error(`Failed to load ${path}: ${r.status}`);
+            return r.text();
+          });
+          const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+          if (parsed.errors?.length) {
+            console.warn(`CSV parse issues for ${path}:`, parsed.errors.slice(0, 3));
+          }
+          for (const row of parsed.data) {
+            allRows.push(row);
+          }
+        }
+        return allRows;
+      }
+
+      function unifyRows(rows) {
+        // Maps CSV rows into a compact, numeric model suitable for aggregation
+        // Drops rows with missing users or dates
+        const unified = [];
+        for (const r of rows) {
+          const dateTime = r[COL.date];
+          const user = (r[COL.user] || '').trim();
+          const model = (r[COL.model] || '').trim() || 'unknown';
+          if (!dateTime || !user) continue;
+
+          const dateOnly = toDateOnlyIso(dateTime);
+          // Skip anything before the desired start date
+          if (dateOnly < MIN_DATE) continue;
+          const tokens = parseNumber(r[COL.totalTokens]);
+          const cost = parseNumber(r[COL.cost]);
+          unified.push({ dateOnly, user, model, tokens, cost });
+        }
+        return unified;
+      }
+
+      function computeTopUsers(unified, topN, metric) {
+        // Build totals by selected metric and drop users whose total is 0
+        const totalsByUser = new Map();
+        for (const r of unified) {
+          totalsByUser.set(r.user, (totalsByUser.get(r.user) || 0) + r[metric]);
+        }
+        const filtered = [...totalsByUser.entries()].filter(([, total]) => total > 0);
+        const sorted = filtered.sort((a, b) => b[1] - a[1]);
+        if (topN < 0 || sorted.length <= topN) return new Set(sorted.map(([u]) => u));
+        return new Set(sorted.slice(0, topN).map(([u]) => u));
+      }
+
+      function aggregateTimeSeries(unified, metric, granularity, usersSubset, dateFrom, dateTo) {
+        // metric: 'tokens' | 'cost', granularity: 'daily' | 'weekly'
+        // Returns { labels: string[], seriesByUser: Map<user, number[]> }
+        const labelSet = new Set();
+        const bucketKey = (dateOnly) => granularity === 'daily' ? dateOnly : getWeekStartUtc(dateOnly);
+        const byUserByBucket = new Map();
+
+        for (const r of unified) {
+          if (usersSubset && !usersSubset.has(r.user)) continue;
+          if (dateFrom && r.dateOnly < dateFrom) continue;
+          if (dateTo && r.dateOnly > dateTo) continue;
+          const key = bucketKey(r.dateOnly);
+          labelSet.add(key);
+          const m = r[metric];
+          const byBucket = byUserByBucket.get(r.user) || new Map();
+          byBucket.set(key, (byBucket.get(key) || 0) + m);
+          byUserByBucket.set(r.user, byBucket);
+        }
+
+        const labels = [...labelSet.values()].sort();
+        const seriesByUser = new Map();
+        for (const [user, byBucket] of byUserByBucket.entries()) {
+          const arr = labels.map(l => byBucket.get(l) || 0);
+          seriesByUser.set(user, arr);
+        }
+        return { labels, seriesByUser };
+      }
+
+      function computeModelShare(unified, metric, startDateInclusive, endDateInclusive) {
+        const byModel = new Map();
+        for (const r of unified) {
+          if (startDateInclusive && r.dateOnly < startDateInclusive) continue;
+          if (endDateInclusive && r.dateOnly > endDateInclusive) continue;
+          byModel.set(r.model, (byModel.get(r.model) || 0) + r[metric]);
+        }
+        const entries = [...byModel.entries()].sort((a, b) => b[1] - a[1]);
+        // Limit to top 10 models + "Other" for readability
+        const top = entries.slice(0, 10);
+        const restTotal = entries.slice(10).reduce((acc, [, v]) => acc + v, 0);
+        if (restTotal > 0) top.push(['Other', restTotal]);
+        return top;
+      }
+
+      // --- Chart helpers
+      function displayName(user) {
+        const at = String(user).indexOf('@');
+        return at === -1 ? String(user) : String(user).slice(0, at);
+      }
+
+      function makeColorPalette(n) {
+        // Generate visually distinct colors via HSL
+        const colors = [];
+        for (let i = 0; i < n; i++) {
+          const hue = Math.round((360 * i) / Math.max(1, n));
+          const c = {
+            border: `hsl(${hue} 80% 60%)`,
+            fill: `hsl(${hue} 90% 60% / 0.14)`,
+          };
+          colors.push(c);
+        }
+        return colors;
+      }
+
+      function makeLineDatasets(seriesByUser, colors) {
+        const users = [...seriesByUser.keys()].sort();
+        return users.map((user, idx) => {
+          const { border, fill } = colors[idx % colors.length];
+          return {
+            label: displayName(user),
+            data: seriesByUser.get(user),
+            borderColor: border,
+            backgroundColor: fill,
+            borderWidth: 2,
+            pointRadius: 1.5,
+            tension: 0.25,
+            fill: true,
+          };
+        });
+      }
+
+      function trimLeadingZeroBuckets(labels, datasets) {
+        // Find the earliest index where any dataset has a non-zero value
+        let firstIdx = 0;
+        const maxLen = labels.length;
+        for (let i = 0; i < maxLen; i++) {
+          let nonZero = false;
+          for (const ds of datasets) {
+            const v = Number(ds.data?.[i] || 0);
+            if (v > 0) { nonZero = true; break; }
+          }
+          if (nonZero) { firstIdx = i; break; }
+          // If we never find a non-zero, keep firstIdx at last index so slicing is safe
+          if (i === maxLen - 1) firstIdx = 0;
+        }
+        if (firstIdx === 0) return { labels, datasets };
+        const newLabels = labels.slice(firstIdx);
+        const newDatasets = datasets.map(ds => ({ ...ds, data: ds.data.slice(firstIdx) }));
+        return { labels: newLabels, datasets: newDatasets };
+      }
+
+      function computeFirstNonZeroIndex(labels, datasets, isVisible) {
+        if (!labels.length) return 0;
+        for (let i = 0; i < labels.length; i++) {
+          for (let d = 0; d < datasets.length; d++) {
+            if (isVisible && !isVisible(d)) continue;
+            const v = Number(datasets[d].data?.[i] || 0);
+            if (v > 0) return i;
+          }
+        }
+        return 0;
+      }
+
+      function formatYAxis(metric) {
+        return metric === 'cost'
+          ? (v) => `$${v.toFixed(v < 10 ? 2 : 0)}`
+          : (v) => v >= 1000 ? `${(v/1000).toFixed(0)}k` : `${v}`;
+      }
+
+      function formatTooltip(metric) {
+        return metric === 'cost'
+          ? (val) => `$${Number(val).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+          : (val) => `${Number(val).toLocaleString()}`;
+      }
+
+      function niceCeil(val) {
+        if (!Number.isFinite(val) || val <= 0) return 1;
+        const power = Math.pow(10, Math.floor(Math.log10(val)));
+        return Math.ceil(val / power) * power;
+      }
+
+      // --- App state & rendering
+      const state = {
+        unified: [],
+        metric: 'tokens', // 'tokens' | 'cost'
+        granularity: 'daily', // 'daily' | 'weekly'
+        topUsers: 8,
+        startDateFilter: null, // keeps the current visual window start (ISO date)
+        currentLine: { labels: [], datasets: [] },
+        rangeMode: 'auto', // 'auto' | 'manual'
+        dateFrom: null,
+        dateTo: null,
+        dataMin: null,
+        dataMax: null,
+        rightMode: 'models', // 'models' | 'users'
+        charts: { line: null, pie: null },
+      };
+
+      async function init() {
+        const rows = await loadAllCsvRows();
+        state.unified = unifyRows(rows);
+        // establish data bounds
+        const dates = state.unified.map(r => r.dateOnly).sort();
+        state.dataMin = dates[0] || MIN_DATE;
+        state.dataMax = dates[dates.length - 1] || MIN_DATE;
+        state.dateFrom = state.dataMin;
+        state.dateTo = state.dataMax;
+        wireControls();
+        // Seed date inputs
+        const df = document.getElementById('dateFrom');
+        const dt = document.getElementById('dateTo');
+        if (df) df.value = state.dateFrom;
+        if (dt) dt.value = state.dateTo;
+        renderAll();
+      }
+
+      function wireControls() {
+        const rightModeToggle = document.getElementById('rightModeToggle');
+        rightModeToggle.addEventListener('click', (e) => {
+          const btn = e.target.closest('button');
+          if (!btn) return;
+          rightModeToggle.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          state.rightMode = btn.dataset.value;
+          renderPie();
+        });
+        const metricToggle = document.getElementById('metricToggle');
+        metricToggle.addEventListener('click', (e) => {
+          const btn = e.target.closest('button');
+          if (!btn) return;
+          metricToggle.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          state.metric = btn.dataset.value;
+          renderLine();
+        });
+
+        const granToggle = document.getElementById('granularityToggle');
+        granToggle.addEventListener('click', (e) => {
+          const btn = e.target.closest('button');
+          if (!btn) return;
+          granToggle.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          state.granularity = btn.dataset.value;
+          renderLine();
+        });
+
+        const topUsers = document.getElementById('topUsers');
+        topUsers.addEventListener('change', () => {
+          state.topUsers = Number(topUsers.value);
+          renderLine();
+        });
+
+        // Pie metric now follows main metric; no separate toggle needed
+
+        const dateFrom = document.getElementById('dateFrom');
+        const dateTo = document.getElementById('dateTo');
+        const quickRange = document.getElementById('quickRange');
+        const rangeInputs = document.getElementById('rangeInputs');
+        const resetRange = document.getElementById('resetRange');
+        const clamp = (val, min, max) => val < min ? min : (val > max ? max : val);
+
+        const onRangeChange = () => {
+          let from = dateFrom.value || state.dataMin;
+          let to = dateTo.value || state.dataMax;
+          from = clamp(from, state.dataMin, state.dataMax);
+          to = clamp(to, state.dataMin, state.dataMax);
+          if (from > to) { to = from; dateTo.value = to; }
+          state.dateFrom = from;
+          state.dateTo = to;
+          state.rangeMode = 'manual';
+          renderAll();
+        };
+
+        function setQuickRange(mode) {
+          const now = new Date();
+          const y = now.getUTCFullYear();
+          const m = now.getUTCMonth(); // 0-based
+          function iso(y, m, d) { return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`; }
+          function firstOfMonth(year, month0) { return iso(year, month0+1, 1); }
+          function lastOfMonth(year, month0) {
+            const d = new Date(Date.UTC(year, month0 + 1, 0));
+            return iso(d.getUTCFullYear(), d.getUTCMonth()+1, d.getUTCDate());
+          }
+
+          let from, to;
+          if (mode === 'current-month') {
+            from = firstOfMonth(y, m);
+            to = lastOfMonth(y, m);
+          } else if (mode === 'last-month') {
+            const lm = new Date(Date.UTC(y, m, 1)); lm.setUTCMonth(m - 1);
+            from = firstOfMonth(lm.getUTCFullYear(), lm.getUTCMonth());
+            to = lastOfMonth(lm.getUTCFullYear(), lm.getUTCMonth());
+          } else if (mode === 'last-3-months') {
+            const start = new Date(Date.UTC(y, m, 1)); start.setUTCMonth(m - 2);
+            from = firstOfMonth(start.getUTCFullYear(), start.getUTCMonth());
+            to = lastOfMonth(y, m);
+          }
+
+          if (from && to) {
+            // clamp to available data window
+            from = from < state.dataMin ? state.dataMin : from;
+            to = to > state.dataMax ? state.dataMax : to;
+            state.dateFrom = from;
+            state.dateTo = to;
+            if (dateFrom) dateFrom.value = from;
+            if (dateTo) dateTo.value = to;
+            state.rangeMode = 'manual';
+            renderAll();
+          }
+        }
+
+        dateFrom.addEventListener('change', onRangeChange);
+        dateTo.addEventListener('change', onRangeChange);
+        resetRange.addEventListener('click', () => {
+          state.rangeMode = 'auto';
+          renderAll();
+        });
+
+        quickRange.addEventListener('change', () => {
+          const mode = quickRange.value;
+          // Show or hide explicit inputs
+          if (mode === 'range') {
+            rangeInputs.classList.remove('hidden');
+          } else {
+            rangeInputs.classList.add('hidden');
+            setQuickRange(mode);
+          }
+        });
+      }
+
+      function renderAll() {
+        renderLine();
+        renderPie();
+      }
+
+      function renderLine() {
+        const { unified, metric, granularity, topUsers, rangeMode, dateFrom, dateTo } = state;
+        const usersSubset = computeTopUsers(unified, topUsers, metric);
+        const { labels, seriesByUser } = aggregateTimeSeries(
+          unified,
+          metric,
+          granularity,
+          usersSubset,
+          rangeMode === 'manual' ? dateFrom : null,
+          rangeMode === 'manual' ? dateTo : null
+        );
+        const colors = makeColorPalette(seriesByUser.size);
+        const datasets = makeLineDatasets(seriesByUser, colors);
+        state.currentLine = { labels, datasets };
+        const firstIdx = rangeMode === 'manual' ? 0 : computeFirstNonZeroIndex(labels, datasets, () => true);
+        const firstLabel = (rangeMode === 'manual' ? (labels[0] || dateFrom) : (labels[firstIdx] || labels[0])) || MIN_DATE;
+        const lastLabel = labels[labels.length - 1] || dateTo || state.dataMax;
+
+        const ctx = document.getElementById('lineChart');
+        if (state.charts.line) state.charts.line.destroy();
+        state.charts.line = new Chart(ctx, {
+          type: 'line',
+          data: { labels, datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            aspectRatio: 2,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+              legend: {
+                display: true,
+                labels: { color: '#cdd6f4', boxWidth: 12 },
+                onClick: (e, legendItem, legend) => {
+                  const chart = legend.chart;
+                  const index = legendItem.datasetIndex;
+                  // toggle visibility
+                  chart.setDatasetVisibility(index, !chart.isDatasetVisible(index));
+                  // recompute first non-zero based on visible datasets
+                  const labelsAll = state.currentLine.labels;
+                  const datasetsAll = state.currentLine.datasets;
+                  const first = computeFirstNonZeroIndex(labelsAll, datasetsAll, (i) => chart.isDatasetVisible(i));
+                  const firstLab = labelsAll[first] || labelsAll[0] || MIN_DATE;
+                  chart.options.scales.x.min = firstLab;
+                  state.startDateFilter = firstLab;
+                  chart.update();
+                  // keep pie in sync
+                  renderPie();
+                }
+              },
+              tooltip: {
+                callbacks: {
+                  label: (ctx) => `${ctx.dataset.label}: ${formatTooltip(metric)(ctx.parsed.y)}`
+                }
+              }
+            },
+            scales: {
+              x: {
+                ticks: { color: '#a8b3cf', maxRotation: 0, autoSkip: true, maxTicksLimit: 12 },
+                grid: { color: 'rgba(255,255,255,0.04)' },
+                min: firstLabel,
+                max: rangeMode === 'manual' ? lastLabel : undefined,
+              },
+              y: {
+                ticks: {
+                  color: '#a8b3cf',
+                  callback: (v) => formatYAxis(metric)(v)
+                },
+                grid: { color: 'rgba(255,255,255,0.04)' }
+              }
+            }
+          }
+        });
+
+        // Update the global start date used for the pie chart timeframe
+        state.startDateFilter = String(firstLabel || MIN_DATE);
+
+        // Keep pie in sync with the active timeframe
+        renderPie();
+      }
+
+      function renderPie() {
+        const { unified, metric, rightMode, startDateFilter, rangeMode, dateFrom, dateTo } = state;
+        const start = rangeMode === 'manual' ? dateFrom : startDateFilter;
+        const end = rangeMode === 'manual' ? dateTo : null;
+
+        let labels, data, colors;
+        if (rightMode === 'models') {
+          const modelShare = computeModelShare(unified, metric, start, end);
+          labels = modelShare.map(([m]) => m);
+          data = modelShare.map(([, v]) => v);
+          colors = makeColorPalette(labels.length);
+        } else {
+          // Top users overall within range & metric
+          const byUser = new Map();
+          for (const r of unified) {
+            if (start && r.dateOnly < start) continue;
+            if (end && r.dateOnly > end) continue;
+            byUser.set(r.user, (byUser.get(r.user) || 0) + r[metric]);
+          }
+          const top = [...byUser.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+          labels = top.map(([u]) => displayName(u));
+          data = top.map(([, v]) => v);
+          colors = makeColorPalette(labels.length);
+        }
+
+        const ctx = document.getElementById('pieChart');
+        if (state.charts.pie) state.charts.pie.destroy();
+        state.charts.pie = new Chart(ctx, {
+          type: rightMode === 'models' ? 'doughnut' : 'bar',
+          data: {
+            labels,
+            datasets: [{
+              label: rightMode === 'models' ? 'Models' : 'Users',
+              data,
+              backgroundColor: rightMode === 'models' ? colors.map(c => c.fill.replace('/ 0.14', '/ 0.45')) : colors.map(c => c.fill),
+              borderColor: colors.map(c => c.border),
+              borderWidth: 1,
+              borderSkipped: rightMode === 'users' ? false : undefined,
+              barPercentage: 0.9,
+              categoryPercentage: 0.9,
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: rightMode === 'models'
+                ? { position: 'bottom', labels: { color: '#cdd6f4', boxWidth: 12 } }
+                : { display: false },
+              tooltip: {
+                callbacks: {
+                  label: (ctx) => rightMode === 'models'
+                    ? `${ctx.label}: ${formatTooltip(metric)(ctx.parsed)}`
+                    : `${ctx.label}: ${formatTooltip(metric)(ctx.parsed.y)}`
+                }
+              }
+            },
+            layout: rightMode === 'users' ? { padding: { top: 0, bottom: 0, left: 8, right: 8 } } : undefined,
+            scales: rightMode === 'users' ? {
+              x: {
+                ticks: { color: '#a8b3cf', maxRotation: 40, autoSkip: false, callback: (v, i, ticks) => labels[i] },
+                grid: { display: false },
+                offset: true,
+              },
+              y: {
+                beginAtZero: true,
+                suggestedMax: niceCeil(Math.max(...data, 0) * 1.15),
+                ticks: { color: '#a8b3cf', callback: (v) => formatYAxis(metric)(v) },
+                grid: { color: 'rgba(255,255,255,0.06)' }
+              }
+            } : undefined,
+            cutout: rightMode === 'models' ? '58%' : undefined
+          }
+        });
+
+        const note = document.getElementById('sideNote');
+        if (note) {
+          note.textContent = start ? (end ? `From ${start} to ${end}` : `From ${start}`) : '';
+        }
+      }
+
+      init().catch(err => {
+        console.error(err);
+        alert('Failed to load CSV data. Please run via a local server (see README).');
+      });
+    </script>
+  </body>
+  </html>
+
+
