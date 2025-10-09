@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Build artifacts (if any added later)
+dist/
+build/
+
+# Local CSV exports
+stats/*.csv
+
