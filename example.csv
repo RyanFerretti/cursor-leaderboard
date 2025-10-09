@@ -1,0 +1,5 @@
+Date,User,Kind,Model,Max Mode,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost
+"2025-09-28T12:34:56.000Z","alex.random@example.com","Included","gpt-4.1","No","12500","0","84500","650","97650","0.08"
+"2025-09-29T15:20:10.000Z","alex.random@example.com","Included","auto","No","9800","0","40210","420","50430","0.04"
+"2025-09-30T09:05:33.000Z","alex.random@example.com","On-Demand","claude-4.5-sonnet-thinking","No","21400","1200","90550","1100","114250","0.12"
+
